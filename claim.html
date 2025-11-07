@@ -14,8 +14,9 @@
     .small{font-size:12px;color:#9ab0c4}
     .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
     .ok{color:#22c55e}.err{color:#ef4444}
-    .row{display:flex;gap:10px;align-items:center}
+    .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
   </style>
+  <!-- Ethers v6 UMD -->
   <script defer src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
 </head>
 <body>
@@ -23,37 +24,45 @@
     <div class="card">
       <h1>Claim your Membership NFT</h1>
       <p class="small">Paste your <strong>purchase transaction hash</strong> from Polygonscan, connect the same wallet used to buy, then mint.</p>
+
       <div class="row" style="margin-top:10px">
         <button id="btnConnect" style="flex:0 0 200px">Connect Wallet</button>
         <div id="acct" class="small mono"></div>
       </div>
+
       <div style="margin-top:12px">
         <input id="txHash" placeholder="0x… (your purchase transaction hash)"/>
       </div>
+
       <div style="margin-top:12px">
         <button id="btnVerify">Verify & Claim NFT</button>
       </div>
+
       <div id="status" class="small" style="margin-top:10px"></div>
+
       <div class="small" style="margin-top:10px">
         Store: <a target="_blank" rel="noreferrer" class="mono" href="https://polygonscan.com/address/0x94617689Ca2F39C5418Bd3CF143445d5533af489">0x9461…f489</a> ·
         Membership: <a target="_blank" rel="noreferrer" class="mono" href="https://polygonscan.com/address/0x9d9605e6924bA7a0411dd381e0eE8000da129316">0x9d96…9316</a>
       </div>
     </div>
   </div>
+
 <script>
 "use strict";
 (async function(){
-  // Config
-  const MEMBERSHIP_CONTRACT = "0x9d9605e6924bA7a0411dd381e0eE8000da129316"; // DreamPlayMembershipNFT
+  // ======== Config ========
+  // Your deployed NFT contract:
+  const MEMBERSHIP_CONTRACT = "0x9d9605e6924bA7a0411dd381e0eE8000da129316";
+  // Absolute URLs to your Netlify function (prevents routing/caching issues):
   const SIGN_ENDPOINTS = [
-    "/api/sign-claim",
-    "/.netlify/functions/sign-claim"
+    "https://dreamplay-claim-portal.netlify.app/api/sign-claim",
+    "https://dreamplay-claim-portal.netlify.app/.netlify/functions/sign-claim"
   ];
   const EXPLORER = "https://polygonscan.com";
+
+  // Human-readable ABI (robust with ethers v6)
   const MEMBERSHIP_ABI = [
-    {"inputs":[{"internalType":"address","name":"signer_","type":"address"},{"internalType":"string","name":"name_","type":"string"},{"internalType":"string","name":"symbol_","type":"string"}],"stateMutability":"nonpayable","type":"constructor"},
-    {"inputs":[{"internalType":"bytes32","name":"orderHash","type":"bytes32"}],"name":"isOrderUsed","outputs":[{"internalType":"bool","name":""}],"stateMutability":"view","type":"function"},
-    {"inputs":[{"internalType":"address","name":"to","type":"address"},{"internalType":"uint8","name":"tier","type":"uint8"},{"internalType":"bytes32","name":"orderHash","type":"bytes32"},{"internalType":"string","name":"tokenURI","type":"string"},{"internalType":"uint8","name":"v","type":"uint8"},{"internalType":"bytes32","name":"r","type":"bytes32"},{"internalType":"bytes32","name":"s","type":"bytes32"}],"name":"claim","outputs":[{"internalType":"uint256","name":"tokenId"}],"stateMutability":"nonpayable","type":"function"}
+    "function claim(address to, uint8 tier, bytes32 orderHash, string tokenURI, uint8 v, bytes32 r, bytes32 s) returns (uint256 tokenId)"
   ];
 
   const $ = (id)=>document.getElementById(id);
@@ -64,20 +73,40 @@
     el.innerHTML = ok ? '<span class="ok">'+msg+'</span>' : msg;
   }
 
+  async function ensurePolygonNetwork(){
+    // Optional: warn if not on Polygon mainnet
+    try {
+      const net = await provider.getNetwork();
+      if (Number(net.chainId) !== 137) {
+        setStatus("Note: you are not on Polygon mainnet (chainId " + net.chainId + "). Switch to Polygon for best results.");
+      }
+    } catch {}
+  }
+
   $('btnConnect').onclick = async ()=>{
-    if (!window.ethereum){ setStatus("Please install MetaMask", false); return; }
-    provider = new ethers.BrowserProvider(window.ethereum, 'any');
-    await provider.send('eth_requestAccounts',[]);
-    signer = await provider.getSigner();
-    acct = await signer.getAddress();
-    $('acct').textContent = `Connected: ${acct}`;
+    try{
+      if (!window.ethereum) { setStatus("Please install MetaMask", false); return; }
+      provider = new ethers.BrowserProvider(window.ethereum, 'any');
+      await provider.send('eth_requestAccounts',[]);
+      signer = await provider.getSigner();
+      acct = await signer.getAddress();
+      $('acct').textContent = 'Connected: ' + acct;
+      await ensurePolygonNetwork();
+    }catch(err){
+      setStatus('❌ ' + (err?.message || String(err)));
+    }
   };
 
   async function requestSignature(payload){
     let lastErr;
     for (const url of SIGN_ENDPOINTS){
       try{
-        const r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        const r = await fetch(url, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify(payload),
+          cache:'no-store'
+        });
         if (r.ok) return await r.json();
         lastErr = new Error('Signer responded '+r.status+' at '+url);
       }catch(e){ lastErr = e; }
@@ -89,24 +118,39 @@
     try{
       if (!signer) await $('btnConnect').onclick();
       const txHash = $('txHash').value.trim();
-      if (!txHash || !txHash.startsWith('0x')) throw new Error('Enter a valid transaction hash');
+      if (!txHash || !txHash.startsWith('0x') || txHash.length < 66) {
+        throw new Error('Enter a valid transaction hash');
+      }
       setStatus("Verifying purchase…");
 
-      // Ask serverless signer to verify this txHash and return EIP-712 signature
+      // Serverless function verifies txHash belongs to your store + buyer == connected wallet,
+      // then returns an EIP-712 signature (v,r,s) and a unique orderHash.
       const { v, r, s, orderHash, tier } = await requestSignature({ txHash, to: acct, tier: 0 });
 
       setStatus("Preparing metadata…");
-      // Minimal JSON metadata via data: URI; replace with IPFS later if desired
+      // Inline SVG → no external hosting required tonight
+      const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='800' height='800'>
+        <rect width='100%' height='100%' fill='#0b0f14'/>
+        <text x='50%' y='48%' dominant-baseline='middle' text-anchor='middle' fill='white' font-family='sans-serif' font-size='40'>DreamPlay Membership</text>
+        <text x='50%' y='58%' dominant-baseline='middle' text-anchor='middle' fill='#9ab0c4' font-family='sans-serif' font-size='24'>Wallet ${acct.slice(0,6)}…${acct.slice(-4)}</text>
+      </svg>`;
+      const image = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
       const tokenURI = "data:application/json;utf8," + encodeURIComponent(JSON.stringify({
         name: "DreamPlay Membership",
-        description: `Membership NFT for ${acct}`,
-        image: "tier-images/tier-1.png",
+        description: "Membership NFT",
+        image,
         attributes: [{trait_type:"claim_method", value:"txhash_portal"}]
       }));
 
       setStatus("Submitting mint…");
       const c = new ethers.Contract(MEMBERSHIP_CONTRACT, MEMBERSHIP_ABI, signer);
-      const tx = await c.claim(acct, tier || 1, orderHash, tokenURI, v, r, s);
+
+      // Safety: verify ABI
+      if (typeof c.claim !== 'function') {
+        throw new Error('ABI mismatch: claim(...) not found. Check MEMBERSHIP_ABI and CONTRACT_ADDR.');
+      }
+
+      const tx = await c.claim(acct, (tier || 1), orderHash, tokenURI, v, r, s);
       const rcpt = await tx.wait();
       setStatus('Minted! <a class="mono" target="_blank" rel="noreferrer" href="'+EXPLORER+'/tx/'+rcpt.hash+'">'+rcpt.hash+'</a>', true);
     }catch(err){
