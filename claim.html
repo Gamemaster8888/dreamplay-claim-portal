@@ -13,8 +13,9 @@
     button{cursor:pointer;background:#0ea5e9;border-color:#0ea5e9;font-weight:700}
     .small{font-size:12px;color:#9ab0c4}
     .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
-    .ok{color:#22c55e}.err{color:#ef4444}
+    .ok{color:#22c55e}
     .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    a{color:#93c5fd}
   </style>
   <!-- Ethers v6 UMD -->
   <script defer src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
@@ -51,9 +52,8 @@
 "use strict";
 (async function(){
   // ======== Config ========
-  // Your deployed NFT contract:
-  const MEMBERSHIP_CONTRACT = "0x9d9605e6924bA7a0411dd381e0eE8000da129316";
-  // Absolute URLs to your Netlify function (prevents routing/caching issues):
+  const MEMBERSHIP_CONTRACT = "0x9d9605e6924bA7a0411dd381e0eE8000da129316"; // DreamPlayMembershipNFT
+  // Use absolute URLs to avoid routing/caching issues:
   const SIGN_ENDPOINTS = [
     "https://dreamplay-claim-portal.netlify.app/api/sign-claim",
     "https://dreamplay-claim-portal.netlify.app/.netlify/functions/sign-claim"
@@ -73,30 +73,28 @@
     el.innerHTML = ok ? '<span class="ok">'+msg+'</span>' : msg;
   }
 
-  async function ensurePolygonNetwork(){
-    // Optional: warn if not on Polygon mainnet
-    try {
-      const net = await provider.getNetwork();
-      if (Number(net.chainId) !== 137) {
-        setStatus("Note: you are not on Polygon mainnet (chainId " + net.chainId + "). Switch to Polygon for best results.");
-      }
-    } catch {}
-  }
-
   $('btnConnect').onclick = async ()=>{
     try{
-      if (!window.ethereum) { setStatus("Please install MetaMask", false); return; }
+      if (!window.ethereum){ setStatus("Please install MetaMask"); return; }
       provider = new ethers.BrowserProvider(window.ethereum, 'any');
       await provider.send('eth_requestAccounts',[]);
       signer = await provider.getSigner();
       acct = await signer.getAddress();
       $('acct').textContent = 'Connected: ' + acct;
-      await ensurePolygonNetwork();
+
+      // Optional: warn if not on Polygon mainnet
+      try {
+        const net = await provider.getNetwork();
+        if (Number(net.chainId) !== 137) {
+          setStatus("Note: you are not on Polygon mainnet (chainId " + net.chainId + "). Switch to Polygon.", false);
+        }
+      } catch {}
     }catch(err){
       setStatus('❌ ' + (err?.message || String(err)));
     }
   };
 
+  // Show server error details instead of just "400"
   async function requestSignature(payload){
     let lastErr;
     for (const url of SIGN_ENDPOINTS){
@@ -104,11 +102,15 @@
         const r = await fetch(url, {
           method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify(payload),
+          body: JSON.stringify(payload),
           cache:'no-store'
         });
-        if (r.ok) return await r.json();
-        lastErr = new Error('Signer responded '+r.status+' at '+url);
+        const text = await r.text();
+        let data; try { data = JSON.parse(text); } catch { data = { raw:text }; }
+        if (r.ok) return data;
+        const detail = data && (data.error || data.detail || data.raw) || `HTTP ${r.status}`;
+        lastErr = new Error(detail);
+        lastErr.response = data;
       }catch(e){ lastErr = e; }
     }
     throw lastErr || new Error('Signer unavailable');
@@ -121,14 +123,8 @@
       if (!txHash || !txHash.startsWith('0x') || txHash.length < 66) {
         throw new Error('Enter a valid transaction hash');
       }
-      setStatus("Verifying purchase…");
 
-      // Serverless function verifies txHash belongs to your store + buyer == connected wallet,
-      // then returns an EIP-712 signature (v,r,s) and a unique orderHash.
-      const { v, r, s, orderHash, tier } = await requestSignature({ txHash, to: acct, tier: 0 });
-
-      setStatus("Preparing metadata…");
-      // Inline SVG → no external hosting required tonight
+      // --- Build tokenURI FIRST so server can include it in the EIP-712 signature ---
       const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='800' height='800'>
         <rect width='100%' height='100%' fill='#0b0f14'/>
         <text x='50%' y='48%' dominant-baseline='middle' text-anchor='middle' fill='white' font-family='sans-serif' font-size='40'>DreamPlay Membership</text>
@@ -142,18 +138,39 @@
         attributes: [{trait_type:"claim_method", value:"txhash_portal"}]
       }));
 
-      setStatus("Submitting mint…");
-      const c = new ethers.Contract(MEMBERSHIP_CONTRACT, MEMBERSHIP_ABI, signer);
+      setStatus("Verifying purchase & signing claim…");
+      // Ask the server to verify txHash belongs to your store + buyer == connected wallet,
+      // and to sign INCLUDING tokenURI (if your contract requires it).
+      const sig = await requestSignature({ txHash, to: acct, tier: 0, tokenURI });
+      const { v, r, s, orderHash, tier, tokenName, chainId, signerAddress, buyer, skuId, includeTokenURI } = sig;
 
-      // Safety: verify ABI
-      if (typeof c.claim !== 'function') {
-        throw new Error('ABI mismatch: claim(...) not found. Check MEMBERSHIP_ABI and CONTRACT_ADDR.');
-      }
+      setStatus(`Verified. Debug:
+• includeTokenURI: ${includeTokenURI}
+• signerAddress: ${signerAddress}
+• domain name: ${tokenName}
+• chainId: ${chainId}
+• tx buyer: ${buyer}
+• skuId→tier: ${skuId}→${tier}
+Submitting mint…`);
+
+      // Mint
+      const c = new ethers.Contract(MEMBERSHIP_CONTRACT, MEMBERSHIP_ABI, signer);
+      if (typeof c.claim !== 'function') throw new Error('ABI mismatch: claim(...) not found');
 
       const tx = await c.claim(acct, (tier || 1), orderHash, tokenURI, v, r, s);
       const rcpt = await tx.wait();
       setStatus('Minted! <a class="mono" target="_blank" rel="noreferrer" href="'+EXPLORER+'/tx/'+rcpt.hash+'">'+rcpt.hash+'</a>', true);
     }catch(err){
+      // If server provided structured error, show it nicely
+      if (err && err.response && (err.response.error || err.response.buyer)) {
+        const msg = [
+          err.response.error ? `Error: ${err.response.error}` : '',
+          err.response.buyer ? `Tx buyer: ${err.response.buyer}` : '',
+          acct ? `Connected: ${acct}` : ''
+        ].filter(Boolean).join('<br>');
+        setStatus("❌ " + msg);
+        return;
+      }
       setStatus("❌ " + (err && err.message ? err.message : String(err)));
     }
   };
