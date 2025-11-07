@@ -1,0 +1,8 @@
+{
+  "name": "dreamplay-claim-portal",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "ethers": "^5.7.2"
+  }
+}

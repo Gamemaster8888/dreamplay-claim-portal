@@ -1,0 +1,13 @@
+[build]
+  publish = "."
+  functions = "netlify/functions"
+  node_bundler = "esbuild"
+
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["ethers"]
+
+[[redirects]]
+  from = "/api/sign-claim"
+  to = "/.netlify/functions/sign-claim"
+  status = 200
