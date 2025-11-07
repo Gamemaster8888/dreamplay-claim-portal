@@ -1,3 +1,4 @@
+// netlify/functions/sign-claim.js
 const { ethers } = require('ethers');
 
 function withCors(body, statusCode = 200) {
@@ -27,7 +28,10 @@ exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return withCors({ error: 'Method not allowed' }, 405);
 
   try {
-    const { SIGNER_PK, CONTRACT_ADDR, RPC_URL, STORE_ADDR, DOMAIN_NAME, DOMAIN_VERSION } = process.env;
+    const {
+      SIGNER_PK, CONTRACT_ADDR, RPC_URL, STORE_ADDR,
+      DOMAIN_NAME, DOMAIN_VERSION, TIER_OFFSET, MIN_TIER
+    } = process.env;
     if (!SIGNER_PK || !CONTRACT_ADDR || !RPC_URL || !STORE_ADDR) {
       return withCors({ error: 'Missing env: SIGNER_PK, CONTRACT_ADDR, RPC_URL, STORE_ADDR' }, 500);
     }
@@ -37,10 +41,8 @@ exports.handler = async (event) => {
     const signerAddress = await wallet.getAddress();
 
     const body = JSON.parse(event.body || '{}');
-    let { orderId, txHash, to, tier } = body;
-    if (!to || (typeof tier !== 'number' && typeof tier !== 'string')) {
-      return withCors({ error: 'Invalid payload. Expect {to, tier:number|string, orderId? txHash?}' }, 400);
-    }
+    let { orderId, txHash, to, tier, tokenURI } = body;
+    if (!to) return withCors({ error: 'Invalid payload. Expect {to,...}' }, 400);
     if (!ethers.utils.isAddress(to)) return withCors({ error: 'Invalid address' }, 400);
 
     let buyer = null, skuId = null;
@@ -67,15 +69,11 @@ exports.handler = async (event) => {
       }
 
       // ---- TIER MAPPING (always >= 1) ----
-      const envOffset = Number(process.env.TIER_OFFSET || 0); // e.g., set to 1 to map skuId 0->tier 1
-      const minTier = Number(process.env.MIN_TIER || 1);      // default 1
-
+      const envOffset = Number(TIER_OFFSET || 0);
+      const minTier = Number(MIN_TIER || 1);
       let t = Number(tier);
-      if (!Number.isFinite(t) || t <= 0) {
-        t = Number(skuId);
-      }
+      if (!Number.isFinite(t) || t <= 0) t = Number(skuId);
       if (!Number.isFinite(t)) t = 1;
-
       t = t + envOffset;
       if (t < minTier) t = minTier;
 
@@ -85,32 +83,44 @@ exports.handler = async (event) => {
 
     if (!orderId) return withCors({ error: 'Provide orderId or txHash' }, 400);
 
-    // Domain (read on-chain name, allow env override)
+    // Build domain: on-chain name() plus optional overrides
     const nft = new ethers.Contract(CONTRACT_ADDR, NFT_ABI, provider);
     let tokenName = 'DreamPlay Membership';
     try { tokenName = await nft.name(); } catch (_) {}
     const domainName = (DOMAIN_NAME && DOMAIN_NAME.trim()) || tokenName;
     const domainVersion = (DOMAIN_VERSION && DOMAIN_VERSION.trim()) || '1';
 
-    const network = await provider.getNetwork();
-    const chainId = network.chainId;
-
+    const { chainId } = await provider.getNetwork();
     const domain = { name: domainName, version: domainVersion, chainId, verifyingContract: CONTRACT_ADDR };
-    const types  = { Claim: [
-      { name: 'to', type: 'address' },
-      { name: 'tier', type: 'uint8' },
-      { name: 'orderHash', type: 'bytes32' }
-    ]};
+
+    // ---- EIP-712 types & value ----
+    // Many contracts require tokenURI inside the signed struct. We include it if provided.
+    const includeTokenURI = typeof tokenURI === 'string' && tokenURI.length > 0;
+    const types = {
+      Claim: includeTokenURI ? [
+        { name: 'to',        type: 'address' },
+        { name: 'tier',      type: 'uint8'   },
+        { name: 'orderHash', type: 'bytes32' },
+        { name: 'tokenURI',  type: 'string'  }
+      ] : [
+        { name: 'to',        type: 'address' },
+        { name: 'tier',      type: 'uint8'   },
+        { name: 'orderHash', type: 'bytes32' }
+      ]
+    };
 
     const orderHash = ethers.utils.id(String(orderId));
-    const value = { to, tier: Number(tier), orderHash };
+    const value = includeTokenURI
+      ? { to, tier: Number(tier), orderHash, tokenURI }
+      : { to, tier: Number(tier), orderHash };
 
     const sig = await wallet._signTypedData(domain, types, value);
     const { v, r, s } = ethers.utils.splitSignature(sig);
 
     return withCors({
       v, r, s, orderHash, tier: Number(tier),
-      tokenName: domainName, chainId, signerAddress, buyer, skuId
+      tokenName: domainName, domainVersion, chainId, signerAddress, buyer, skuId,
+      includeTokenURI
     });
   } catch (err) {
     console.error(err);
