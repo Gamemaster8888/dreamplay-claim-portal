@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DreamPlay – Membership NFT Claim (Fixed ABI)</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial;margin:0;background:#0b0f14;color:#e7edf3}
+    .wrap{max-width:720px;margin:32px auto;padding:16px}
+    .card{background:#121821;border:1px solid #1b2531;border-radius:14px;padding:20px;margin-bottom:16px}
+    h1{margin:0 0 8px;font-size:24px}
+    input,button{width:100%;padding:12px;border-radius:10px;border:1px solid #263244;background:#0d131a;color:#e7edf3}
+    button{cursor:pointer;background:#0ea5e9;border-color:#0ea5e9;font-weight:700}
+    .small{font-size:12px;color:#9ab0c4}
+    .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+    .ok{color:#22c55e}.err{color:#ef4444}
+    .row{display:flex;gap:10px;align-items:center}
+  </style>
+  <script defer src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Claim your Membership NFT</h1>
+      <p class="small">Paste your <strong>purchase transaction hash</strong> from Polygonscan, connect the same wallet used to buy, then mint.</p>
+      <div class="row" style="margin-top:10px">
+        <button id="btnConnect" style="flex:0 0 200px">Connect Wallet</button>
+        <div id="acct" class="small mono"></div>
+      </div>
+      <div style="margin-top:12px">
+        <input id="txHash" placeholder="0x… (your purchase transaction hash)"/>
+      </div>
+      <div style="margin-top:12px">
+        <button id="btnVerify">Verify & Claim NFT</button>
+      </div>
+      <div id="status" class="small" style="margin-top:10px"></div>
+      <div class="small" style="margin-top:10px">
+        Store: <a target="_blank" rel="noreferrer" class="mono" href="https://polygonscan.com/address/0x94617689Ca2F39C5418Bd3CF143445d5533af489">0x9461…f489</a> ·
+        Membership: <a target="_blank" rel="noreferrer" class="mono" href="https://polygonscan.com/address/0x9d9605e6924bA7a0411dd381e0eE8000da129316">0x9d96…9316</a>
+      </div>
+    </div>
+  </div>
+<script>
+"use strict";
+(async function(){
+  // === Config ===
+  const MEMBERSHIP_CONTRACT = "0x9d9605e6924bA7a0411dd381e0eE8000da129316"; // DreamPlayMembershipNFT
+  const SIGN_ENDPOINTS = [
+    "/api/sign-claim",
+    "/.netlify/functions/sign-claim"
+  ];
+  const EXPLORER = "https://polygonscan.com";
+
+  // Minimal ABI that DEFINES claim() correctly
+  const MEMBERSHIP_ABI = [
+    {
+      "type": "function",
+      "stateMutability": "nonpayable",
+      "name": "claim",
+      "inputs": [
+        { "name": "to", "type": "address" },
+        { "name": "tier", "type": "uint8" },
+        { "name": "orderHash", "type": "bytes32" },
+        { "name": "tokenURI", "type": "string" },
+        { "name": "v", "type": "uint8" },
+        { "name": "r", "type": "bytes32" },
+        { "name": "s", "type": "bytes32" }
+      ],
+      "outputs": [
+        { "name": "tokenId", "type": "uint256" }
+      ]
+    }
+  ];
+
+  const $ = (id)=>document.getElementById(id);
+  let provider, signer, acct;
+
+  function setStatus(msg, ok=false){
+    const el = $('status');
+    el.innerHTML = ok ? '<span class="ok">'+msg+'</span>' : msg;
+  }
+
+  $('btnConnect').onclick = async ()=>{
+    try{
+      if (!window.ethereum){ setStatus("Please install MetaMask", false); return; }
+      provider = new ethers.BrowserProvider(window.ethereum, 'any');
+      await provider.send('eth_requestAccounts',[]);
+      signer = await provider.getSigner();
+      acct = await signer.getAddress();
+      $('acct').textContent = 'Connected: ' + acct;
+    }catch(err){
+      setStatus('❌ ' + (err?.message || String(err)));
+    }
+  };
+
+  async function requestSignature(payload){
+    let lastErr;
+    for (const url of SIGN_ENDPOINTS){
+      try{
+        const r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        if (r.ok) return await r.json();
+        lastErr = new Error('Signer responded '+r.status+' at '+url);
+      }catch(e){ lastErr = e; }
+    }
+    throw lastErr || new Error('Signer unavailable');
+  }
+
+  $('btnVerify').onclick = async ()=>{
+    try{
+      if (!signer) await $('btnConnect').onclick();
+      const txHash = $('txHash').value.trim();
+      if (!txHash || !txHash.startsWith('0x')) throw new Error('Enter a valid transaction hash');
+      setStatus("Verifying purchase…");
+
+      // Ask serverless signer to verify txHash and return EIP-712 signature
+      const { v, r, s, orderHash, tier } = await requestSignature({ txHash, to: acct, tier: 0 });
+
+      setStatus("Preparing metadata…");
+      // Inline SVG image so you don't need external files
+      const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='800' height='800'>
+        <rect width='100%' height='100%' fill='#0b0f14'/>
+        <text x='50%' y='48%' dominant-baseline='middle' text-anchor='middle' fill='white' font-family='sans-serif' font-size='40'>DreamPlay Membership</text>
+        <text x='50%' y='58%' dominant-baseline='middle' text-anchor='middle' fill='#9ab0c4' font-family='sans-serif' font-size='24'>Wallet ${acct.slice(0,6)}…${acct.slice(-4)}</text>
+      </svg>`;
+      const image = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+      const tokenURI = "data:application/json;utf8," + encodeURIComponent(JSON.stringify({
+        name: "DreamPlay Membership",
+        description: "Membership NFT",
+        image,
+        attributes: [{trait_type:"claim_method", value:"txhash_portal"}]
+      }));
+
+      setStatus("Submitting mint…");
+      const c = new ethers.Contract(MEMBERSHIP_CONTRACT, MEMBERSHIP_ABI, signer);
+      if (typeof c.claim !== 'function') throw new Error('ABI mismatch: claim(...) not found');
+
+      const tx = await c.claim(acct, (tier || 1), orderHash, tokenURI, v, r, s);
+      const rcpt = await tx.wait();
+      setStatus('Minted! <a class="mono" target="_blank" rel="noreferrer" href="'+EXPLORER+'/tx/'+rcpt.hash+'">'+rcpt.hash+'</a>', true);
+    }catch(err){
+      setStatus("❌ " + (err && err.message ? err.message : String(err)));
+    }
+  };
+})();
+</script>
+</body>
+</html>
