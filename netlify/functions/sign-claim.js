@@ -43,15 +43,16 @@ exports.handler = async (event) => {
     const body = JSON.parse(event.body || '{}');
     let { orderId, txHash, to, tier, tokenURI } = body;
     if (!to) return withCors({ error: 'Invalid payload. Expect {to,...}' }, 400);
-    if (!ethers.utils.isAddress(to)) return withCors({ error: 'Invalid address' }, 400);
+    if (!ethers.isAddress(to)) return withCors({ error: 'Invalid address' }, 400);
 
     let buyer = null, skuId = null;
 
+    // If a tx hash was provided, verify the store purchase + buyer
     if (txHash) {
       const receipt = await provider.getTransactionReceipt(txHash);
       if (!receipt || receipt.status !== 1) return withCors({ error: 'Invalid or failed transaction' }, 400);
 
-      const iface = new ethers.utils.Interface(STORE_ABI);
+      const iface = new ethers.Interface(STORE_ABI);
       let parsedEv = null;
       for (const lg of receipt.logs) {
         if (lg.address.toLowerCase() !== STORE_ADDR.toLowerCase()) continue;
@@ -68,7 +69,7 @@ exports.handler = async (event) => {
         return withCors({ error: 'Wallet mismatch: tx buyer != connected wallet', buyer, to }, 400);
       }
 
-      // ---- TIER MAPPING (always >= 1) ----
+      // Map tier safely: default to skuId, enforce >=1, optional offset
       const envOffset = Number(TIER_OFFSET || 0);
       const minTier = Number(MIN_TIER || 1);
       let t = Number(tier);
@@ -76,54 +77,88 @@ exports.handler = async (event) => {
       if (!Number.isFinite(t)) t = 1;
       t = t + envOffset;
       if (t < minTier) t = minTier;
-
       tier = t;
-      orderId = txHash;
+
+      orderId = txHash; // unique per purchase
     }
 
     if (!orderId) return withCors({ error: 'Provide orderId or txHash' }, 400);
 
-    // Build domain: on-chain name() plus optional overrides
+    // Build domain name from on-chain name(), allow env override
     const nft = new ethers.Contract(CONTRACT_ADDR, NFT_ABI, provider);
     let tokenName = 'DreamPlay Membership';
     try { tokenName = await nft.name(); } catch (_) {}
     const domainName = (DOMAIN_NAME && DOMAIN_NAME.trim()) || tokenName;
-    const domainVersion = (DOMAIN_VERSION && DOMAIN_VERSION.trim()) || '1';
 
     const { chainId } = await provider.getNetwork();
-    const domain = { name: domainName, version: domainVersion, chainId, verifyingContract: CONTRACT_ADDR };
+    const envVersion = (DOMAIN_VERSION && DOMAIN_VERSION.trim()) || null;
+    const versions = Array.from(new Set([envVersion, '1', '0', '2'].filter(Boolean)));
 
-    // ---- EIP-712 types & value ----
-    // Many contracts require tokenURI inside the signed struct. We include it if provided.
-    const includeTokenURI = typeof tokenURI === 'string' && tokenURI.length > 0;
-    const types = {
-      Claim: includeTokenURI ? [
-        { name: 'to',        type: 'address' },
-        { name: 'tier',      type: 'uint8'   },
-        { name: 'orderHash', type: 'bytes32' },
-        { name: 'tokenURI',  type: 'string'  }
-      ] : [
-        { name: 'to',        type: 'address' },
-        { name: 'tier',      type: 'uint8'   },
-        { name: 'orderHash', type: 'bytes32' }
-      ]
-    };
+    const withTokenURI = typeof tokenURI === 'string' && tokenURI.length > 0;
+    const layouts = withTokenURI
+      ? [
+          { includeTokenURI: true,  types: { Claim: [
+            { name:'to', type:'address' },
+            { name:'tier', type:'uint8' },
+            { name:'orderHash', type:'bytes32' },
+            { name:'tokenURI', type:'string' }
+          ]}},
+          { includeTokenURI: false, types: { Claim: [
+            { name:'to', type:'address' },
+            { name:'tier', type:'uint8' },
+            { name:'orderHash', type:'bytes32' }
+          ]}}
+        ]
+      : [
+          { includeTokenURI: false, types: { Claim: [
+            { name:'to', type:'address' },
+            { name:'tier', type:'uint8' },
+            { name:'orderHash', type:'bytes32' }
+          ]}},
+          { includeTokenURI: true,  types: { Claim: [
+            { name:'to', type:'address' },
+            { name:'tier', type:'uint8' },
+            { name:'orderHash', type:'bytes32' },
+            { name:'tokenURI', type:'string' }
+          ]}}
+        ];
 
-    const orderHash = ethers.utils.id(String(orderId));
-    const value = includeTokenURI
-      ? { to, tier: Number(tier), orderHash, tokenURI }
-      : { to, tier: Number(tier), orderHash };
+    const orderHash = ethers.id(String(orderId));
+    const sigs = [];
 
-    const sig = await wallet._signTypedData(domain, types, value);
-    const { v, r, s } = ethers.utils.splitSignature(sig);
+    for (const v of versions) {
+      for (const layout of layouts) {
+        const domain = { name: domainName, version: v, chainId, verifyingContract: CONTRACT_ADDR };
+        const value  = layout.includeTokenURI
+          ? { to, tier: Number(tier), orderHash, tokenURI }
+          : { to, tier: Number(tier), orderHash };
+        try {
+          const sig = await wallet.signTypedData(domain, layout.types, value);
+          const { v:V, r, s } = ethers.Signature.from(sig);
+          sigs.push({
+            v: V, r, s,
+            orderHash,
+            tier: Number(tier),
+            domainName,
+            domainVersion: v,
+            chainId,
+            signerAddress,
+            includeTokenURI: layout.includeTokenURI
+          });
+        } catch (_) { /* try next */ }
+      }
+    }
+
+    if (!sigs.length) {
+      return withCors({ error: 'no_signature_candidates' }, 500);
+    }
 
     return withCors({
-      v, r, s, orderHash, tier: Number(tier),
-      tokenName: domainName, domainVersion, chainId, signerAddress, buyer, skuId,
-      includeTokenURI
+      candidates: sigs,
+      buyer, skuId
     });
   } catch (err) {
     console.error(err);
-    return withCors({ error: 'server_error', detail: String(err && err.message ? err.message : err) }, 500);
+    return withCors({ error: 'server_error', detail: String(err?.message || String(err)) }, 500);
   }
 };
