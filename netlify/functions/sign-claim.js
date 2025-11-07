@@ -1,6 +1,7 @@
 // netlify/functions/sign-claim.js
 const { ethers } = require('ethers');
 
+// CORS helper
 function withCors(body, statusCode = 200) {
   const allow = process.env.ALLOW_ORIGIN || '*';
   return {
@@ -36,26 +37,32 @@ exports.handler = async (event) => {
       return withCors({ error: 'Missing env: SIGNER_PK, CONTRACT_ADDR, RPC_URL, STORE_ADDR' }, 500);
     }
 
+    // ethers v5 provider/wallet
     const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
-    const wallet = new ethers.Wallet(SIGNER_PK, provider);
+    const wallet   = new ethers.Wallet(SIGNER_PK, provider);
     const signerAddress = await wallet.getAddress();
 
+    // Parse body
     const body = JSON.parse(event.body || '{}');
     let { orderId, txHash, to, tier, tokenURI } = body;
+
+    // v5 address check
     if (!to) return withCors({ error: 'Invalid payload. Expect {to,...}' }, 400);
-    if (!ethers.isAddress(to)) return withCors({ error: 'Invalid address' }, 400);
+    if (!ethers.utils.isAddress(to)) return withCors({ error: 'Invalid address' }, 400);
 
     let buyer = null, skuId = null;
 
-    // If a tx hash was provided, verify the store purchase + buyer
+    // If a txHash is provided, verify the purchase and wallet
     if (txHash) {
       const receipt = await provider.getTransactionReceipt(txHash);
-      if (!receipt || receipt.status !== 1) return withCors({ error: 'Invalid or failed transaction' }, 400);
+      if (!receipt || receipt.status !== 1) {
+        return withCors({ error: 'Invalid or failed transaction' }, 400);
+      }
 
-      const iface = new ethers.Interface(STORE_ABI);
+      const iface = new ethers.utils.Interface(STORE_ABI);
       let parsedEv = null;
       for (const lg of receipt.logs) {
-        if (lg.address.toLowerCase() !== STORE_ADDR.toLowerCase()) continue;
+        if ((lg.address || '').toLowerCase() !== STORE_ADDR.toLowerCase()) continue;
         try {
           const ev = iface.parseLog(lg);
           if (ev && ev.name === 'Purchased') { parsedEv = ev; break; }
@@ -69,31 +76,36 @@ exports.handler = async (event) => {
         return withCors({ error: 'Wallet mismatch: tx buyer != connected wallet', buyer, to }, 400);
       }
 
-      // Map tier safely: default to skuId, enforce >=1, optional offset
+      // Tier mapping: default to skuId, enforce >=1, optional offset
       const envOffset = Number(TIER_OFFSET || 0);
-      const minTier = Number(MIN_TIER || 1);
+      const minTier   = Number(MIN_TIER || 1);
+
       let t = Number(tier);
       if (!Number.isFinite(t) || t <= 0) t = Number(skuId);
       if (!Number.isFinite(t)) t = 1;
+
       t = t + envOffset;
       if (t < minTier) t = minTier;
-      tier = t;
 
+      tier = t;
       orderId = txHash; // unique per purchase
     }
 
     if (!orderId) return withCors({ error: 'Provide orderId or txHash' }, 400);
 
-    // Build domain name from on-chain name(), allow env override
+    // Build domain data from on-chain name() with optional overrides
     const nft = new ethers.Contract(CONTRACT_ADDR, NFT_ABI, provider);
     let tokenName = 'DreamPlay Membership';
     try { tokenName = await nft.name(); } catch (_) {}
-    const domainName = (DOMAIN_NAME && DOMAIN_NAME.trim()) || tokenName;
 
     const { chainId } = await provider.getNetwork();
+    const domainName = (DOMAIN_NAME && DOMAIN_NAME.trim()) || tokenName;
+
+    // Candidate domain versions to try (env first, then common fallbacks)
     const envVersion = (DOMAIN_VERSION && DOMAIN_VERSION.trim()) || null;
     const versions = Array.from(new Set([envVersion, '1', '0', '2'].filter(Boolean)));
 
+    // Candidate type layouts (with & without tokenURI)
     const withTokenURI = typeof tokenURI === 'string' && tokenURI.length > 0;
     const layouts = withTokenURI
       ? [
@@ -123,20 +135,31 @@ exports.handler = async (event) => {
           ]}}
         ];
 
-    const orderHash = ethers.id(String(orderId));
-    const sigs = [];
+    // v5 keccak helper
+    const orderHash = ethers.utils.id(String(orderId));
 
+    // Build multiple signature candidates (versions × layouts)
+    const candidates = [];
     for (const v of versions) {
       for (const layout of layouts) {
-        const domain = { name: domainName, version: v, chainId, verifyingContract: CONTRACT_ADDR };
+        const domain = {
+          name: domainName,
+          version: v,
+          chainId,
+          verifyingContract: CONTRACT_ADDR
+        };
         const value  = layout.includeTokenURI
           ? { to, tier: Number(tier), orderHash, tokenURI }
           : { to, tier: Number(tier), orderHash };
+
         try {
-          const sig = await wallet.signTypedData(domain, layout.types, value);
-          const { v:V, r, s } = ethers.Signature.from(sig);
-          sigs.push({
-            v: V, r, s,
+          // v5 EIP-712 signer
+          const sig = await wallet._signTypedData(domain, layout.types, value);
+          const parsed = ethers.utils.splitSignature(sig); // { v, r, s }
+          candidates.push({
+            v: parsed.v,
+            r: parsed.r,
+            s: parsed.s,
             orderHash,
             tier: Number(tier),
             domainName,
@@ -145,20 +168,23 @@ exports.handler = async (event) => {
             signerAddress,
             includeTokenURI: layout.includeTokenURI
           });
-        } catch (_) { /* try next */ }
+        } catch (_) {
+          // keep trying other layouts/versions
+        }
       }
     }
 
-    if (!sigs.length) {
+    if (!candidates.length) {
       return withCors({ error: 'no_signature_candidates' }, 500);
     }
 
     return withCors({
-      candidates: sigs,
+      candidates,
       buyer, skuId
     });
+
   } catch (err) {
     console.error(err);
-    return withCors({ error: 'server_error', detail: String(err?.message || String(err)) }, 500);
+    return withCors({ error: 'server_error', detail: String(err && err.message ? err.message : err) }, 500);
   }
 };
