@@ -1,4 +1,3 @@
-// netlify/functions/sign-claim.js
 const { ethers } = require('ethers');
 
 function withCors(body, statusCode = 200) {
@@ -28,7 +27,7 @@ exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return withCors({ error: 'Method not allowed' }, 405);
 
   try {
-    const { SIGNER_PK, CONTRACT_ADDR, RPC_URL, STORE_ADDR } = process.env;
+    const { SIGNER_PK, CONTRACT_ADDR, RPC_URL, STORE_ADDR, DOMAIN_NAME, DOMAIN_VERSION } = process.env;
     if (!SIGNER_PK || !CONTRACT_ADDR || !RPC_URL || !STORE_ADDR) {
       return withCors({ error: 'Missing env: SIGNER_PK, CONTRACT_ADDR, RPC_URL, STORE_ADDR' }, 500);
     }
@@ -67,34 +66,42 @@ exports.handler = async (event) => {
         return withCors({ error: 'Wallet mismatch: tx buyer != connected wallet', buyer, to }, 400);
       }
 
-      const t = Number(tier);
-      tier = Number.isFinite(t) && t > 0 ? t : skuId;
+      // ---- TIER MAPPING (always >= 1) ----
+      const envOffset = Number(process.env.TIER_OFFSET || 0); // e.g., set to 1 to map skuId 0->tier 1
+      const minTier = Number(process.env.MIN_TIER || 1);      // default 1
+
+      let t = Number(tier);
+      if (!Number.isFinite(t) || t <= 0) {
+        t = Number(skuId);
+      }
+      if (!Number.isFinite(t)) t = 1;
+
+      t = t + envOffset;
+      if (t < minTier) t = minTier;
+
+      tier = t;
       orderId = txHash;
     }
 
     if (!orderId) return withCors({ error: 'Provide orderId or txHash' }, 400);
 
-    // Use on-chain token name for the EIP-712 domain
+    // Domain (read on-chain name, allow env override)
     const nft = new ethers.Contract(CONTRACT_ADDR, NFT_ABI, provider);
     let tokenName = 'DreamPlay Membership';
     try { tokenName = await nft.name(); } catch (_) {}
+    const domainName = (DOMAIN_NAME && DOMAIN_NAME.trim()) || tokenName;
+    const domainVersion = (DOMAIN_VERSION && DOMAIN_VERSION.trim()) || '1';
 
     const network = await provider.getNetwork();
     const chainId = network.chainId;
 
-    const domain = {
-      name: tokenName,
-      version: '1',
-      chainId,
-      verifyingContract: CONTRACT_ADDR
-    };
-    const types = {
-      Claim: [
-        { name: 'to', type: 'address' },
-        { name: 'tier', type: 'uint8' },
-        { name: 'orderHash', type: 'bytes32' }
-      ]
-    };
+    const domain = { name: domainName, version: domainVersion, chainId, verifyingContract: CONTRACT_ADDR };
+    const types  = { Claim: [
+      { name: 'to', type: 'address' },
+      { name: 'tier', type: 'uint8' },
+      { name: 'orderHash', type: 'bytes32' }
+    ]};
+
     const orderHash = ethers.utils.id(String(orderId));
     const value = { to, tier: Number(tier), orderHash };
 
@@ -103,7 +110,7 @@ exports.handler = async (event) => {
 
     return withCors({
       v, r, s, orderHash, tier: Number(tier),
-      tokenName, chainId, signerAddress, buyer, skuId
+      tokenName: domainName, chainId, signerAddress, buyer, skuId
     });
   } catch (err) {
     console.error(err);
