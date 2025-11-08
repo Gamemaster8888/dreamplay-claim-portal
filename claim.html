@@ -73,11 +73,14 @@
 <script>
 "use strict";
 (async function(){
+  // ==== CONTRACT ADDRESSES (Polygon) ====
   const STORE_ADDR      = "0x94617689Ca2F39C5418Bd3CF143445d5533af489";
   const MEMBERSHIP_ADDR = "0x9d9605e6924bA7a0411dd381e0eE8000da129316";
-  const IMG_BASE        = "/images"; // place your PNGs here (sku-0.png, sku-1.png, …, sku-default.png)
 
-  // ABIs
+  // Images: /images/sku-<id>.png and /images/sku-default.png
+  const IMG_BASE        = "/images";
+
+  // ==== ABIs ====
   const STORE_ABI = [
     "event Purchased(address indexed buyer,uint256 indexed skuId,uint256 priceUSDC,address sponsor,address[8] uplines,uint256[8] levelPaid,uint256 storehouseAmt,uint256 wipAmt)"
   ];
@@ -106,7 +109,7 @@
 
   function imageForSku(skuId){
     const n = Number(skuId);
-    return `${IMG_BASE}/sku-${n}.png`; // browser will 404 if missing
+    return `${IMG_BASE}/sku-${n}.png`; // if missing, browser 404s; preview has fallback
   }
 
   function absoluteUrl(url){
@@ -227,6 +230,24 @@
     }
   }
 
+  // Optional helper to show owned tokenIds on "already claimed"
+  async function findOwnedTokenIds(owner){
+    try{
+      const TRANSFER_TOPIC = ethers.id("Transfer(address,address,uint256)");
+      const ownerTopic = "0x" + "0".repeat(24*2) + owner.slice(2).toLowerCase();
+      const logs = await provider.getLogs({
+        address: MEMBERSHIP_ADDR,
+        topics: [TRANSFER_TOPIC, null, ownerTopic],
+        fromBlock: 0,
+        toBlock: "latest"
+      });
+      const i = new ethers.Interface(["event Transfer(address indexed from,address indexed to,uint256 indexed tokenId)"]);
+      const ids = [];
+      for (const lg of logs) { try{ const ev = i.parseLog(lg); if (ev && ev.name==="Transfer") ids.push(ev.args.tokenId.toString()); }catch{} }
+      return Array.from(new Set(ids));
+    }catch{ return []; }
+  }
+
   $('btnVerify').onclick = async ()=>{
     try{
       if (!signer) await $('btnConnect').onclick();
@@ -235,6 +256,10 @@
 
       setStatus("Checking purchase…");
       const { buyer, skuId } = await getPurchase(txHash);
+
+      // Echo detected values for clarity
+      setStatus(`Detected skuId: ${skuId}, buyer: ${buyer}. Checking eligibility…`);
+
       if (buyer.toLowerCase() !== acct.toLowerCase()) {
         setStatus(`❌ Wallet mismatch. Tx buyer is ${buyer}, you connected ${acct}.`); return;
       }
@@ -252,7 +277,12 @@
       const pre = await canClaimPreflight(skuId, fieldsHash);
       if (!pre.ok) {
         if (pre.reason.toLowerCase().includes("already claimed")) {
-          setStatus("Already claimed for this wallet/SKU.", false);
+          setStatus("Already claimed for this wallet/SKU. Fetching your token…");
+          const ids = await findOwnedTokenIds(acct);
+          if (ids.length){
+            const link = `https://polygonscan.com/token/${MEMBERSHIP_ADDR}?a=${ids[0]}`;
+            setStatus(`Already claimed. Your token ID(s): <a class="mono" target="_blank" rel="noreferrer" href="${link}">#${ids.join(", #")}</a>`, true);
+          }
         } else {
           setStatus("❌ " + pre.reason);
         }
