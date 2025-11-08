@@ -10,35 +10,28 @@
     .card{background:#121821;border:1px solid #1b2531;border-radius:14px;padding:20px;margin-bottom:16px}
     h1{margin:0 0 8px;font-size:24px}
     label{display:block;font-size:12px;color:#9ab0c4;margin:10px 0 6px}
-    input,button,textarea{width:100%;padding:12px;border-radius:10px;border:1px solid #263244;background:#0d131a;color:#e7edf3}
+    input,button{width:100%;padding:12px;border-radius:10px;border:1px solid #263244;background:#0d131a;color:#e7edf3}
     button{cursor:pointer;background:#0ea5e9;border-color:#0ea5e9;font-weight:700}
     .small{font-size:12px;color:#9ab0c4}
     .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
     .ok{color:#22c55e}
-    .bad{color:#f87171}
     .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-    .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-    @media (max-width:820px){.grid{grid-template-columns:1fr}}
     a{color:#93c5fd}
     .preview{margin-top:14px;border:1px dashed #2a3646;border-radius:10px;padding:12px;display:none}
-    .muted{opacity:.9}
     .thumb{width:140px;height:140px;object-fit:cover;border-radius:12px;border:1px solid #243244;background:#0d131a}
     .flex{display:flex;gap:12px;align-items:flex-start}
     .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
     .panel{margin-top:10px;border:1px solid #253244;border-radius:10px;padding:10px;background:#0d131a}
-    .btn-secondary{background:#1f2a37;border-color:#243244}
-    .row-split{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
-    .row-split > div{flex:1}
   </style>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230ea5e9'/%3E%3Ctext x='32' y='38' font-size='28' text-anchor='middle' fill='white' font-family='sans-serif'%3ED%3C/text%3E%3C/svg%3E">
-  <!-- Ethers v6 -->
+  <!-- Ethers v6 (UMD) -->
   <script defer src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
       <h1>Claim your Membership NFT</h1>
-      <p class="small">Paste your <strong>purchase transaction hash</strong> from Polygonscan, connect the same wallet used to buy, fill your details, then mint.</p>
+      <p class="small">Paste your <strong>purchase transaction hash</strong> from Polygonscan, connect the same wallet used to buy, then mint. This version uses one image for all NFTs and no extra fields.</p>
 
       <div class="row" style="margin-top:10px">
         <button id="btnConnect" style="flex:0 0 200px">Connect Wallet</button>
@@ -48,21 +41,8 @@
       <label for="txHash">Purchase transaction hash</label>
       <input id="txHash" placeholder="0x… (your purchase tx hash on Polygon)" />
 
-      <!-- 8 labeled traits -->
-      <div class="grid" style="margin-top:8px">
-        <div><label for="f1">DreamPlay/Humanity Protocol Member since</label><input id="f1" placeholder="YYYY-MM-DD" /></div>
-        <div><label for="f2">Social Media 1</label><input id="f2" placeholder="@handle or link" /></div>
-        <div><label for="f3">Social Media 2</label><input id="f3" placeholder="@handle or link" /></div>
-        <div><label for="f4">State</label><input id="f4" placeholder="e.g., FL, CA, TX…" /></div>
-        <div><label for="f5">Country</label><input id="f5" placeholder="e.g., USA" /></div>
-        <div><label for="f6">I'm repping</label><input id="f6" placeholder="e.g., Humanity Protocol / DreamPlay" /></div>
-        <div><label for="f7">DreamPlay Sponsor</label><input id="f7" placeholder="Sponsor name (optional)" /></div>
-        <div><label for="f8">My Dream</label><input id="f8" placeholder="Short phrase" /></div>
-      </div>
-
-      <div class="row-split" style="margin-top:12px">
-        <div><button id="btnVerify">Verify & Claim NFT</button></div>
-        <div><button id="btnForce" class="btn-secondary" style="display:none">Try mint anyway (advanced)</button></div>
+      <div style="margin-top:12px">
+        <button id="btnVerify">Verify & Claim NFT</button>
       </div>
 
       <div id="status" class="small" style="margin-top:10px"></div>
@@ -76,7 +56,7 @@
 
       <div id="metaPreview" class="preview small"></div>
 
-      <div class="small muted" style="margin-top:10px">
+      <div class="small" style="margin-top:10px;opacity:.9">
         Store: <a target="_blank" rel="noreferrer" class="mono" href="https://polygonscan.com/address/0x94617689Ca2F39C5418Bd3CF143445d5533af489">0x9461…f489</a> ·
         Membership: <a target="_blank" rel="noreferrer" class="mono" href="https://polygonscan.com/address/0x9d9605e6924bA7a0411dd381e0eE8000da129316">0x9d96…9316</a>
       </div>
@@ -86,12 +66,12 @@
 <script>
 "use strict";
 (async function(){
-  // ==== CONTRACT ADDRESSES (Polygon) ====
+  // ==== CONTRACTS (Polygon) ====
   const STORE_ADDR      = "0x94617689Ca2F39C5418Bd3CF143445d5533af489";
   const MEMBERSHIP_ADDR = "0x9d9605e6924bA7a0411dd381e0eE8000da129316";
 
-  // Images: /images/sku-<id>.png and /images/sku-default.png
-  const IMG_BASE        = "/images";
+  // Single image for all tokens
+  const SINGLE_IMAGE_PATH = "/images/membership.png"; // <-- put this file in your repo
 
   // ==== ABIs ====
   const STORE_ABI = [
@@ -99,63 +79,25 @@
   ];
   const MEMBERSHIP_ABI = [
     "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
-    "function name() view returns (string)",
     "function claim(uint256 skuId, bytes32 fieldsHash) returns (uint256)"
   ];
+  const MEMBERSHIP_IFACE = new ethers.Interface(MEMBERSHIP_ABI);
 
   const $ = (id)=>document.getElementById(id);
   let provider, signer, acct;
-  let lastSkuId = null;
-  let lastFieldsHash = null;
 
   function setStatus(msg, ok=false){
     $('status').innerHTML = ok ? '<span class="ok">'+msg+'</span>' : msg;
   }
+  function absUrl(p){ return p.startsWith("http") ? p : (location.origin + p); }
 
-  function showDebug(buyer, skuId, preflightMsg){
-    const dbg = $('debug');
-    dbg.style.display = 'block';
-    $('detailBuyer').textContent = "Detected buyer (from tx): " + (buyer || "—");
-    $('detailSku').textContent   = "Detected skuId: " + (skuId ?? "—");
-    $('detailPreflight').innerHTML = "Preflight: " + (preflightMsg || "—");
-  }
-
-  function getFieldsArray(){
-    return Array.from({length:8}, (_,i)=> (document.getElementById('f'+(i+1)).value || '').trim());
-  }
-
-  function fieldsHashFromInputs(){
-    const vals = getFieldsArray();
-    const joined = vals.join('|'); // stable delimiter
-    return ethers.keccak256(ethers.toUtf8Bytes(joined)); // bytes32
-  }
-
-  function imageForSku(skuId){
-    const n = Number(skuId);
-    return `${IMG_BASE}/sku-${n}.png`;
-  }
-
-  function absoluteUrl(url){
-    return url.startsWith('http') ? url : (location.origin + url);
-  }
-
-  function buildTokenMetadata(skuId, imageUrl, fields){
-    const absoluteImage = absoluteUrl(imageUrl);
+  function buildMetadata(skuId){
+    const imageUrl = absUrl(SINGLE_IMAGE_PATH);
     return {
-      name: `DreamPlay Membership – SKU ${skuId}`,
-      description: "DreamPlay Membership NFT. Claim verified by store purchase; holder fields hashed on-chain.",
-      image: absoluteImage,
-      attributes: [
-        { trait_type: "DreamPlay/Humanity Protocol Member since", value: fields[0] || "" },
-        { trait_type: "Social Media 1", value: fields[1] || "" },
-        { trait_type: "Social Media 2", value: fields[2] || "" },
-        { trait_type: "State", value: fields[3] || "" },
-        { trait_type: "Country", value: fields[4] || "" },
-        { trait_type: "I'm repping", value: fields[5] || "" },
-        { trait_type: "DreamPlay Sponsor", value: fields[6] || "" },
-        { trait_type: "My Dream", value: fields[7] || "" },
-        { trait_type: "skuId", value: String(skuId) }
-      ]
+      name: "DreamPlay Membership",
+      description: "DreamPlay Membership NFT. Claim verified by store purchase.",
+      image: imageUrl,
+      attributes: [{ trait_type: "skuId", value: String(skuId) }]
     };
   }
 
@@ -164,12 +106,11 @@
     const jsonPretty = JSON.stringify(metadata, null, 2);
     const metaDataURI = "data:application/json;utf8," + encodeURIComponent(jsonPretty);
     const openSea = tokenId ? `https://opensea.io/assets/matic/${MEMBERSHIP_ADDR}/${tokenId}` : null;
-
     box.style.display = 'block';
     box.innerHTML = `
       <div><strong>Metadata preview${tokenId?` for token #${tokenId}`:''}:</strong></div>
       <div class="flex" style="margin-top:8px">
-        <img class="thumb" src="${metadata.image}" alt="SKU Image" onerror="this.src='${absoluteUrl(IMG_BASE + '/sku-default.png')}'">
+        <img class="thumb" src="${metadata.image}" alt="NFT Image" onerror="this.src='${absUrl('/images/sku-default.png')}'">
         <div class="mono" style="white-space:pre-wrap;overflow:auto;max-height:260px">${jsonPretty}</div>
       </div>
       <div class="actions">
@@ -177,19 +118,13 @@
         <button id="copyUriBtn" type="button">Copy tokenURI (data:)</button>
         ${openSea ? `<a target="_blank" rel="noreferrer" href="${openSea}">OpenSea</a>` : ""}
       </div>
-      <div class="small muted" style="margin-top:6px">
-        Marketplaces need <code>tokenURI(tokenId)</code> to return JSON with an absolute <code>image</code> URL.
-      </div>
     `;
-
     const btn = document.getElementById('copyUriBtn');
-    if (btn) {
-      btn.onclick = async ()=>{
-        const tokenURI = "data:application/json;utf8," + encodeURIComponent(jsonPretty);
-        await navigator.clipboard.writeText(tokenURI);
-        setStatus("tokenURI copied to clipboard.", true);
-      };
-    }
+    if (btn) btn.onclick = async ()=>{
+      const tokenURI = "data:application/json;utf8," + encodeURIComponent(jsonPretty);
+      await navigator.clipboard.writeText(tokenURI);
+      setStatus("tokenURI copied to clipboard.", true);
+    };
   }
 
   function tryGetTokenIdFromReceipt(rcpt){
@@ -214,10 +149,8 @@
       signer = await provider.getSigner();
       acct = await signer.getAddress();
       $('acct').textContent = 'Connected: ' + acct;
-      try {
-        const net = await provider.getNetwork();
-        if (Number(net.chainId) !== 137) setStatus("Note: you are not on Polygon mainnet (chainId " + net.chainId + "). Switch to Polygon.");
-      } catch {}
+      try{ const net = await provider.getNetwork();
+           if (Number(net.chainId)!==137) setStatus("Note: switch MetaMask to Polygon mainnet."); } catch {}
     }catch(err){ setStatus('❌ ' + (err?.message || String(err))); }
   };
 
@@ -237,45 +170,20 @@
     throw new Error("No Purchased event found for this tx");
   }
 
-  // v6 preflight (simulate) — no gas
-  async function canClaimPreflight(skuId, fieldsHash){
-    const c = new ethers.Contract(
-      MEMBERSHIP_ADDR,
-      ["function claim(uint256,bytes32) returns (uint256)"],
-      signer
-    );
-    try {
-      await c.simulate.claim(skuId, fieldsHash);
-      return { ok: true, message: "OK" };
-    } catch (e) {
+  // Preflight using raw provider.call to claim(skuId, bytes32)
+  async function preflightClaim(acct, skuId, fieldsHash){
+    try{
+      const data = MEMBERSHIP_IFACE.encodeFunctionData("claim", [skuId, fieldsHash]);
+      await provider.call({ to: MEMBERSHIP_ADDR, from: acct, data });
+      return { ok:true, message:"OK" };
+    }catch(e){
       const msg = (e && e.message) ? e.message : String(e);
-      return { ok: false, message: msg };
+      return { ok:false, message: msg };
     }
   }
 
-  // Optional: find owned tokenIds when already-claimed
-  async function findOwnedTokenIds(owner){
-    try{
-      const TRANSFER_TOPIC = ethers.id("Transfer(address,address,uint256)");
-      const ownerTopic = "0x" + "0".repeat(24*2) + owner.slice(2).toLowerCase();
-      const logs = await provider.getLogs({
-        address: MEMBERSHIP_ADDR,
-        topics: [TRANSFER_TOPIC, null, ownerTopic],
-        fromBlock: 0,
-        toBlock: "latest"
-      });
-      const i = new ethers.Interface(["event Transfer(address indexed from,address indexed to,uint256 indexed tokenId)"]);
-      const ids = [];
-      for (const lg of logs) { try{ const ev = i.parseLog(lg); if (ev && ev.name==="Transfer") ids.push(ev.args.tokenId.toString()); }catch{} }
-      return Array.from(new Set(ids));
-    }catch{ return []; }
-  }
-
-  // Main click
   $('btnVerify').onclick = async ()=>{
-    $('btnForce').style.display = 'none';
     $('debug').style.display = 'none';
-
     try{
       if (!signer) await $('btnConnect').onclick();
       const txHash = $('txHash').value.trim();
@@ -284,51 +192,37 @@
       setStatus("Checking purchase…");
       const { buyer, skuId } = await getPurchase(txHash);
 
-      // Echo detected values for clarity
-      setStatus(`Detected skuId: ${skuId}, buyer: ${buyer}. Checking eligibility…`);
       $('debug').style.display = 'block';
-      $('detailBuyer').textContent = "Detected buyer (from tx): " + buyer;
-      $('detailSku').textContent   = "Detected skuId: " + skuId;
+      document.getElementById('detailBuyer').textContent = "Detected buyer (from tx): " + buyer;
+      document.getElementById('detailSku').textContent   = "Detected skuId: " + skuId;
 
       if (buyer.toLowerCase() !== acct.toLowerCase()) {
-        showDebug(buyer, skuId, "Wallet mismatch");
+        document.getElementById('detailPreflight').textContent = "Wallet mismatch";
         setStatus(`❌ Wallet mismatch. Tx buyer is ${buyer}, you connected ${acct}.`);
         return;
       }
 
-      // Build metadata + preview
-      const fields   = getFieldsArray();
-      const imgUrl   = imageForSku(skuId);
-      const metadata = buildTokenMetadata(skuId, imgUrl, fields);
+      // Build metadata preview now (single image, no fields)
+      const metadata = buildMetadata(skuId);
       showPreview(metadata);
 
-      // Claim on-chain with fieldsHash
-      const fieldsHash = fieldsHashFromInputs();
-      lastFieldsHash = fieldsHash;
-      lastSkuId = skuId;
+      // Use a constant fieldsHash so claim signature stays simple
+      const fieldsHash = ethers.keccak256(ethers.toUtf8Bytes("DP-MEMBERSHIP"));
 
       // Preflight
-      const pre = await canClaimPreflight(skuId, fieldsHash);
-      $('detailPreflight').textContent = "Preflight: " + pre.message;
+      const pre = await preflightClaim(acct, skuId, fieldsHash);
+      document.getElementById('detailPreflight').textContent = "Preflight: " + pre.message;
 
-      if (!pre.ok) {
-        // Common friendly messages
+      if (!pre.ok){
         if (pre.message.toLowerCase().includes("already claimed")) {
           setStatus("Already claimed for this wallet/SKU.", false);
-          const ids = await findOwnedTokenIds(acct);
-          if (ids.length){
-            const link = `https://polygonscan.com/token/${MEMBERSHIP_ADDR}?a=${ids[0]}`;
-            setStatus(`Already claimed. Your token ID(s): <a class="mono" target="_blank" rel="noreferrer" href="${link}">#${ids.join(", #")}</a>`, true);
-          }
-          // Show force button for admins who know what they’re doing
-          $('btnForce').style.display = 'inline-block';
         } else {
           setStatus("❌ " + pre.message);
-          $('btnForce').style.display = 'inline-block'; // allow manual attempt
         }
         return;
       }
 
+      // Mint
       setStatus(`Verified purchase for skuId ${skuId}. Minting…`);
       const membership = new ethers.Contract(MEMBERSHIP_ADDR, MEMBERSHIP_ABI, signer);
       const tx = await membership.claim(skuId, fieldsHash);
@@ -341,7 +235,7 @@
       );
       showPreview(metadata, tokenId);
 
-      // Best-effort setTokenURI
+      // Best-effort setTokenURI (owner-only in many contracts)
       try{
         const c2 = new ethers.Contract(MEMBERSHIP_ADDR, ["function setTokenURI(uint256,string)"], signer);
         if (typeof c2.setTokenURI === 'function' && tokenId !== null) {
@@ -353,36 +247,16 @@
             'Minted & tokenURI set! <a class="mono" target="_blank" rel="noreferrer" href="https://polygonscan.com/tx/'+tx2.hash+'">'+tx2.hash+'</a>',
             true
           );
+        } else {
+          setStatus("Minted. If image doesn’t show on marketplaces, set tokenURI manually (owner).");
         }
-      }catch{}
+      }catch(err){
+        setStatus("Minted. Could not set tokenURI automatically; use manual method on Polygonscan (owner).");
+      }
 
     }catch(err){
       const msg = (err && err.message) ? err.message : String(err);
       setStatus("❌ " + msg);
-    }
-  };
-
-  // Advanced: try mint even when preflight warns (may revert & cost gas!)
-  $('btnForce').onclick = async ()=>{
-    try{
-      if (lastSkuId === null || !lastFieldsHash){ setStatus("No previous verification to force.", false); return; }
-      const yes = confirm("Force mint anyway?\n\nWarning: if the contract rejects (e.g., already claimed), you may pay gas for a revert.");
-      if (!yes) return;
-
-      setStatus(`Forcing mint for skuId ${lastSkuId}…`);
-      const membership = new ethers.Contract(MEMBERSHIP_ADDR, MEMBERSHIP_ABI, signer);
-      const tx = await membership.claim(lastSkuId, lastFieldsHash);
-      const rcpt = await tx.wait();
-      const tokenId = tryGetTokenIdFromReceipt(rcpt);
-
-      setStatus(
-        'Minted! <a class="mono" target="_blank" rel="noreferrer" href="https://polygonscan.com/tx/'+rcpt.hash+'">'+rcpt.hash+'</a>',
-        true
-      );
-
-    }catch(err){
-      const msg = (err && err.message) ? err.message : String(err);
-      setStatus("❌ (forced) " + msg);
     }
   };
 })();
