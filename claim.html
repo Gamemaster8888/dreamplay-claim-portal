@@ -26,6 +26,7 @@
     .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
   </style>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230ea5e9'/%3E%3Ctext x='32' y='38' font-size='28' text-anchor='middle' fill='white' font-family='sans-serif'%3ED%3C/text%3E%3C/svg%3E">
+  <!-- Ethers v6 -->
   <script defer src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
 </head>
 <body>
@@ -47,7 +48,7 @@
         <div><label for="f1">DreamPlay/Humanity Protocol Member since</label><input id="f1" placeholder="YYYY-MM-DD" /></div>
         <div><label for="f2">Social Media 1</label><input id="f2" placeholder="@handle or link" /></div>
         <div><label for="f3">Social Media 2</label><input id="f3" placeholder="@handle or link" /></div>
-        <div><label for="f4">State</label><input id="f4" placeholder="e.g., CA, TX, NY…" /></div>
+        <div><label for="f4">State</label><input id="f4" placeholder="e.g., FL, CA, TX…" /></div>
         <div><label for="f5">Country</label><input id="f5" placeholder="e.g., USA" /></div>
         <div><label for="f6">I'm repping</label><input id="f6" placeholder="e.g., Humanity Protocol / DreamPlay" /></div>
         <div><label for="f7">DreamPlay Sponsor</label><input id="f7" placeholder="Sponsor name (optional)" /></div>
@@ -74,7 +75,7 @@
 (async function(){
   const STORE_ADDR      = "0x94617689Ca2F39C5418Bd3CF143445d5533af489";
   const MEMBERSHIP_ADDR = "0x9d9605e6924bA7a0411dd381e0eE8000da129316";
-  const IMG_BASE        = "/images"; // place your PNGs here
+  const IMG_BASE        = "/images"; // place your PNGs here (sku-0.png, sku-1.png, …, sku-default.png)
 
   // ABIs
   const STORE_ABI = [
@@ -124,7 +125,7 @@
         { trait_type: "Social Media 2", value: fields[2] || "" },                           // 3
         { trait_type: "State", value: fields[3] || "" },                                    // 4
         { trait_type: "Country", value: fields[4] || "" },                                  // 5
-        { trait_type: "I'm repping", value: fields[5] || "" },                               // 6
+        { trait_type: "I'm repping", value: fields[5] || "" },                              // 6
         { trait_type: "DreamPlay Sponsor", value: fields[6] || "" },                        // 7
         { trait_type: "My Dream", value: fields[7] || "" },                                 // 8
         { trait_type: "skuId", value: String(skuId) }
@@ -155,7 +156,6 @@
       </div>
     `;
 
-    // Copy button
     const btn = document.getElementById('copyUriBtn');
     if (btn) {
       btn.onclick = async ()=>{
@@ -211,11 +211,20 @@
     throw new Error("No Purchased event found for this tx");
   }
 
-  // Optional preflight (nice UX): dry-run claim to catch "already claimed" without gas
+  // v6 preflight (simulate) — no gas; catches "already claimed" etc.
   async function canClaimPreflight(skuId, fieldsHash){
-    const c = new ethers.Contract(MEMBERSHIP_ADDR, ["function claim(uint256,bytes32) returns (uint256)"], signer);
-    try { await c.callStatic.claim(skuId, fieldsHash); return { ok:true }; }
-    catch(e){ return { ok:false, reason: (e && e.message) ? e.message : String(e) }; }
+    const c = new ethers.Contract(
+      MEMBERSHIP_ADDR,
+      ["function claim(uint256,bytes32) returns (uint256)"],
+      signer
+    );
+    try {
+      await c.simulate.claim(skuId, fieldsHash);
+      return { ok: true };
+    } catch (e) {
+      const msg = (e && e.message) ? e.message : String(e);
+      return { ok: false, reason: msg };
+    }
   }
 
   $('btnVerify').onclick = async ()=>{
@@ -239,7 +248,7 @@
       // Claim on-chain with fieldsHash
       const fieldsHash = fieldsHashFromInputs();
 
-      // Preflight
+      // Preflight (v6 simulate)
       const pre = await canClaimPreflight(skuId, fieldsHash);
       if (!pre.ok) {
         if (pre.reason.toLowerCase().includes("already claimed")) {
