@@ -12,9 +12,11 @@
     label{display:block;font-size:12px;color:#9ab0c4;margin:10px 0 6px}
     input,button{width:100%;padding:12px;border-radius:10px;border:1px solid #263244;background:#0d131a;color:#e7edf3}
     button{cursor:pointer;background:#0ea5e9;border-color:#0ea5e9;font-weight:700}
+    button[disabled]{opacity:.6;cursor:not-allowed}
     .small{font-size:12px;color:#9ab0c4}
     .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
     .ok{color:#22c55e}
+    .bad{color:#f87171}
     .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
     a{color:#93c5fd}
     .preview{margin-top:14px;border:1px dashed #2a3646;border-radius:10px;padding:12px;display:none}
@@ -34,7 +36,7 @@
       <p class="small">Paste your <strong>purchase transaction hash</strong> from Polygonscan, connect the same wallet used to buy, then mint. This version uses one image for all NFTs and no extra fields.</p>
 
       <div class="row" style="margin-top:10px">
-        <button id="btnConnect" style="flex:0 0 200px">Connect Wallet</button>
+        <button id="btnConnect" style="flex:0 0 200px" disabled>Connect Wallet</button>
         <div id="acct" class="small mono"></div>
       </div>
 
@@ -42,7 +44,7 @@
       <input id="txHash" placeholder="0x… (your purchase tx hash on Polygon)" />
 
       <div style="margin-top:12px">
-        <button id="btnVerify">Verify & Claim NFT</button>
+        <button id="btnVerify" disabled>Verify & Claim NFT</button>
       </div>
 
       <div id="status" class="small" style="margin-top:10px"></div>
@@ -65,13 +67,24 @@
 
 <script>
 "use strict";
-(async function(){
+
+(function boot(){
+  // Enable buttons ONLY after ethers has loaded and DOM is ready
+  const readyInterval = setInterval(()=>{
+    if (window.ethers && document.readyState !== "loading") {
+      clearInterval(readyInterval);
+      init();
+    }
+  }, 50);
+})();
+
+function init(){
   // ==== CONTRACTS (Polygon) ====
   const STORE_ADDR      = "0x94617689Ca2F39C5418Bd3CF143445d5533af489";
   const MEMBERSHIP_ADDR = "0x9d9605e6924bA7a0411dd381e0eE8000da129316";
 
   // Single image for all tokens
-  const SINGLE_IMAGE_PATH = "/images/membership.png"; // <-- put this file in your repo
+  const SINGLE_IMAGE_PATH = "/images/membership.png"; // ensure this exists
 
   // ==== ABIs ====
   const STORE_ABI = [
@@ -84,10 +97,14 @@
   const MEMBERSHIP_IFACE = new ethers.Interface(MEMBERSHIP_ABI);
 
   const $ = (id)=>document.getElementById(id);
+  const btnConnect = $('btnConnect');
+  const btnVerify  = $('btnVerify');
+  const statusEl   = $('status');
+
   let provider, signer, acct;
 
   function setStatus(msg, ok=false){
-    $('status').innerHTML = ok ? '<span class="ok">'+msg+'</span>' : msg;
+    statusEl.innerHTML = ok ? '<span class="ok">'+msg+'</span>' : msg;
   }
   function absUrl(p){ return p.startsWith("http") ? p : (location.origin + p); }
 
@@ -141,17 +158,39 @@
     return null;
   }
 
-  $('btnConnect').onclick = async ()=>{
+  // Enable Connect button and wire up
+  btnConnect.disabled = false;
+  btnConnect.onclick = async ()=>{
     try{
-      if (!window.ethereum){ setStatus("Please install MetaMask"); return; }
+      if (!window.ethereum){
+        setStatus('❌ MetaMask not detected. Install MetaMask and open this page in a standard browser (not an embedded webview).');
+        return;
+      }
+      // Request accounts must be triggered by a user gesture
       provider = new ethers.BrowserProvider(window.ethereum, 'any');
-      await provider.send('eth_requestAccounts',[]);
+      await provider.send('eth_requestAccounts', []);
       signer = await provider.getSigner();
-      acct = await signer.getAddress();
+      acct   = await signer.getAddress();
       $('acct').textContent = 'Connected: ' + acct;
-      try{ const net = await provider.getNetwork();
-           if (Number(net.chainId)!==137) setStatus("Note: switch MetaMask to Polygon mainnet."); } catch {}
-    }catch(err){ setStatus('❌ ' + (err?.message || String(err))); }
+
+      try {
+        const net = await provider.getNetwork();
+        if (Number(net.chainId) !== 137) {
+          setStatus('Not on Polygon. MetaMask may prompt you to switch.', false);
+          // attempt to switch (will prompt user)
+          try{
+            await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x89' }] });
+            setStatus('Switched to Polygon.', true);
+          }catch{}
+        } else {
+          setStatus('Wallet connected.', true);
+        }
+      } catch {}
+
+      btnVerify.disabled = false;
+    }catch(err){
+      setStatus('❌ ' + (err?.message || String(err)));
+    }
   };
 
   async function getPurchase(txHash){
@@ -160,17 +199,17 @@
     const iface = new ethers.Interface(STORE_ABI);
     for (const lg of r.logs || []) {
       if ((lg.address || '').toLowerCase() !== STORE_ADDR.toLowerCase()) continue;
-      try {
+      try{
         const ev = iface.parseLog(lg);
         if (ev && ev.name === 'Purchased') {
           return { buyer: ev.args.buyer, skuId: Number(ev.args.skuId) };
         }
-      } catch {}
+      }catch{}
     }
     throw new Error("No Purchased event found for this tx");
   }
 
-  // Preflight using raw provider.call to claim(skuId, bytes32)
+  // Preflight using low-level call to claim(skuId,bytes32)
   async function preflightClaim(acct, skuId, fieldsHash){
     try{
       const data = MEMBERSHIP_IFACE.encodeFunctionData("claim", [skuId, fieldsHash]);
@@ -182,10 +221,10 @@
     }
   }
 
-  $('btnVerify').onclick = async ()=>{
+  btnVerify.onclick = async ()=>{
     $('debug').style.display = 'none';
     try{
-      if (!signer) await $('btnConnect').onclick();
+      if (!signer) { setStatus('Please connect your wallet first.'); return; }
       const txHash = $('txHash').value.trim();
       if (!txHash || !txHash.startsWith('0x') || txHash.length < 66) throw new Error('Enter a valid transaction hash');
 
@@ -193,25 +232,25 @@
       const { buyer, skuId } = await getPurchase(txHash);
 
       $('debug').style.display = 'block';
-      document.getElementById('detailBuyer').textContent = "Detected buyer (from tx): " + buyer;
-      document.getElementById('detailSku').textContent   = "Detected skuId: " + skuId;
+      $('detailBuyer').textContent = "Detected buyer (from tx): " + buyer;
+      $('detailSku').textContent   = "Detected skuId: " + skuId;
 
       if (buyer.toLowerCase() !== acct.toLowerCase()) {
-        document.getElementById('detailPreflight').textContent = "Wallet mismatch";
+        $('detailPreflight').textContent = "Wallet mismatch";
         setStatus(`❌ Wallet mismatch. Tx buyer is ${buyer}, you connected ${acct}.`);
         return;
       }
 
-      // Build metadata preview now (single image, no fields)
+      // Build & show metadata (single image, no fields)
       const metadata = buildMetadata(skuId);
       showPreview(metadata);
 
-      // Use a constant fieldsHash so claim signature stays simple
+      // Constant fieldsHash
       const fieldsHash = ethers.keccak256(ethers.toUtf8Bytes("DP-MEMBERSHIP"));
 
       // Preflight
       const pre = await preflightClaim(acct, skuId, fieldsHash);
-      document.getElementById('detailPreflight').textContent = "Preflight: " + pre.message;
+      $('detailPreflight').textContent = "Preflight: " + pre.message;
 
       if (!pre.ok){
         if (pre.message.toLowerCase().includes("already claimed")) {
@@ -235,7 +274,7 @@
       );
       showPreview(metadata, tokenId);
 
-      // Best-effort setTokenURI (owner-only in many contracts)
+      // Best-effort tokenURI (owner-only on many contracts). If it fails, do manual setTokenURI on Polygonscan.
       try{
         const c2 = new ethers.Contract(MEMBERSHIP_ADDR, ["function setTokenURI(uint256,string)"], signer);
         if (typeof c2.setTokenURI === 'function' && tokenId !== null) {
@@ -248,18 +287,17 @@
             true
           );
         } else {
-          setStatus("Minted. If image doesn’t show on marketplaces, set tokenURI manually (owner).");
+          setStatus("Minted. If image doesn’t show, set tokenURI manually as contract owner on Polygonscan.");
         }
       }catch(err){
         setStatus("Minted. Could not set tokenURI automatically; use manual method on Polygonscan (owner).");
       }
 
     }catch(err){
-      const msg = (err && err.message) ? err.message : String(err);
-      setStatus("❌ " + msg);
+      setStatus("❌ " + (err?.message || String(err)));
     }
   };
-})();
+}
 </script>
 </body>
 </html>
