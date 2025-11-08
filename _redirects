@@ -1,0 +1,2 @@
+/metadata/:id        /metadata/default.json 200
+/metadata/:id.json   /metadata/default.json 200
